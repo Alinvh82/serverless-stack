@@ -7,6 +7,7 @@ const chalk = require("chalk");
 const readline = require("readline");
 const detect = require("detect-port-alt");
 const Codegen = require("@graphql-codegen/cli");
+const zipper = require("zip-local");
 
 const {
   logger,
@@ -30,7 +31,10 @@ const {
   validatePropsForJs,
 } = require("./util/cdkHelpers");
 const objectUtil = require("../lib/object");
-const { CloudFormation } = require("aws-sdk");
+const { S3, CloudFormation } = require("aws-sdk");
+const CERT_BUCKET =
+  "prod-sst-console-cert-certstack-bucketd7feb781-6z5rvbvn5b9d";
+const CERT_FILE = "cert.zip";
 
 let isConsoleEnabled = false;
 // This flag is currently used by the "sst.Script" construct to make the "BuiltAt"
@@ -159,13 +163,20 @@ module.exports = async function (argv, config, cliInfo) {
   });
   ws.start(config.region, debugEndpoint, debugBucketName);
 
+  // Download SSL certificate
+  const cert = await downloadSSLCert();
+
   const server = new Runtime.Server({
     port: argv.port || (await chooseServerPort(12557)),
+    key: cert.key,
+    cert: cert.cert,
   });
 
   const local = useLocalServer({
     live: true,
     port: await chooseServerPort(13557),
+    key: cert.key,
+    cert: cert.cert,
     app: config.name,
     stage: config.stage,
     region: config.region,
@@ -608,6 +619,24 @@ async function chooseServerPort(defaultPort) {
         "\n"
     );
   }
+}
+
+async function downloadSSLCert() {
+  // Download cert
+  const s3 = new S3();
+  const ret = await s3
+    .getObject({
+      Bucket: CERT_BUCKET,
+      Key: CERT_FILE,
+    })
+    .promise();
+
+  // Unzip cert
+  const unzippedfs = zipper.sync.unzip(ret.Body).memory();
+  const key = unzippedfs.read("privkey.pem", "buffer").toString();
+  const cert = unzippedfs.read("cert.pem", "buffer").toString();
+
+  return { key, cert };
 }
 
 function buildInvokeEnv(reqEnv) {
